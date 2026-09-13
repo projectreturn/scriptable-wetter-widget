@@ -1,4 +1,4 @@
-// WetterWidget 4.0 — mittleres, schwarzes Scriptable-Widget.
+// WetterWidget 4.1 TEST — mit antippbarer Radar-Zeitleiste.
 // Daten: DWD-RV, Stationsmessungen und amtliche Gebietswarnungen via Bright Sky.
 // Niederschlagsart und lokales Glätterisiko sind Näherungen; im Widget werden
 // bewusst keine Datenanbieter eingeblendet.
@@ -6,6 +6,8 @@
 const SETTINGS = {
   apiBase: "https://api.brightsky.dev",
   rainThreshold: 1, // 0,01 mm/5 Minuten: auch sehr leichter Regen zählt
+  radarMapDistance: 10000, // Meter je Richtung werden für die Karte geladen
+  radarMapZoom: 12, // Startansicht; höher bedeutet näher herangezoomt
   radarMaxAge: 20, // Minuten seit DWD-Modelllauf, nicht seit Download
   weatherMaxAge: 40,
   forecastMaxAge: 360,
@@ -66,8 +68,8 @@ async function locate() {
   saveCache("location", loc);
   return loc;
 }
-async function fetchJSON(path, loc, query, maxAge) {
-  const key = path;
+async function fetchJSON(path, loc, query, maxAge, cacheName) {
+  const key = cacheName || path;
   const saved = readCache(key);
   try {
     const req = new Request(SETTINGS.apiBase + "/" + path +
@@ -159,6 +161,24 @@ function radarData(payload, now) {
     now - f.run <= SETTINGS.radarMaxAge * MIN && f.run <= now + 5 * MIN);
   return { frames: valid, run: valid.length ? Math.max(...valid.map(f => f.run)) : null,
     cached: payload.cached };
+}
+function radarMapData(payload, now) {
+  const json = payload.json || {};
+  const raw = Array.isArray(json.radar) ? json.radar : [];
+  const frames = raw.map(function (f) {
+    const match = String(f.source || "").match(/::(\d{4}-\d{2}-\d{2}T.*)$/);
+    const run = match ? Date.parse(match[1]) : NaN;
+    return { at: Date.parse(f.timestamp), run: run,
+      forecast: Number.isFinite(run) && run < Date.parse(f.timestamp), grid: f.precipitation_5 };
+  }).filter(function (f) {
+    return Number.isFinite(f.at) && Array.isArray(f.grid) &&
+      f.at >= now - 65 * MIN && f.at <= now + 125 * MIN;
+  });
+  let points = json.geometry && json.geometry.coordinates || [];
+  if (points.length && Array.isArray(points[0]) && Array.isArray(points[0][0])) points = points[0];
+  points = points.filter(p => Array.isArray(p) && number(p[0]) != null && number(p[1]) != null);
+  return { frames: frames, points: points, position: json.latlon_position || null,
+    cached: payload.cached, now: now };
 }
 function frameAt(frames, at) {
   // Choose the 5-minute accumulation window containing this time.
@@ -378,7 +398,7 @@ function weatherSymbol(icon) {
 }
 function detailsURL() {
   const base = URLScheme.forRunningScript();
-  return base + (base.includes("?") ? "&" : "?") + "details=1";
+  return base + (base.includes("?") ? "&" : "?") + "radar=1";
 }
 function dailyBlock(parent, title, forecast) {
   const block = parent.addStack();
@@ -476,45 +496,49 @@ function buildWidget(loc, w, tomorrow, dayAfter, radar, m, now) {
   bottom.addSpacer();
   return widget;
 }
-function tableRow(table, title, subtitle, height, header) {
-  const row = new UITableRow();
-  row.height = height || (subtitle ? 58 : 44);
-  row.isHeader = !!header;
-  row.addText(title, subtitle || "");
-  table.addRow(row);
-  return row;
-}
-async function showDetails(loc, w, radar, alerts, m, now) {
-  const table = new UITable();
-  table.showSeparators = true;
-  tableRow(table, loc.name || coordinates(loc), "Wetterdetails · Stand " + clock(now), 52, true);
-  const temp = w && w.temperature != null ? w.temperature.toFixed(1).replace(".", ",") + " °C" : "nicht verfügbar";
-  const station = w && w.station ? w.station + (w.stationDistance != null
-    ? " · ca. " + Math.round(w.stationDistance / 1000) + " km entfernt" : "") : "Station nicht angegeben";
-  tableRow(table, "Aktuell: " + temp, "Messzeit " + (w ? clock(w.at) : "—") + " · " + station, 62);
-  tableRow(table, m.label, windLabel(w), 58);
-  tableRow(table, "Niederschlagsverlauf", m.summary, 58, true);
-  radar.frames.filter(f => f.at >= now && f.at <= now + 120 * MIN && f.value != null).forEach(function (f) {
-    const phase = type(f, w);
-    const amount = wet(f) ? strength(f) + " · " + (f.value / 100).toFixed(2).replace(".", ",") + " mm/5 Min" : "trocken";
-    tableRow(table, clock(f.at - 5 * MIN) + "–" + clock(f.at), phase.name + (phase.name === "Regen/Schnee" ? "" : " · " + amount), 48);
-  });
-  tableRow(table, "Glätterisiko", "Orange bedeutet: amtliche Gebietswarnung oder lokale Schätzung aus Temperatur und Nässe.", 68, true);
-  if (alerts.warnings.length) {
-    alerts.warnings.forEach(function (a) {
-      const times = (Number.isFinite(a.from) ? "ab " + clock(a.from) : "aktiv") +
-        (Number.isFinite(a.until) ? " bis " + clock(a.until) : "");
-      tableRow(table, a.title, times + " · Gilt für " + (alerts.area || "das Warngebiet") +
-        ", nicht als Bestätigung für eine konkrete Straße.", 82);
-    });
-  } else if (alerts.available) {
-    tableRow(table, "Keine aktive amtliche Glättewarnung", "Die eigene Schätzung kann trotzdem orange erscheinen. Sie kennt keine Straßenoberflächentemperatur.", 76);
-  } else {
-    tableRow(table, "Amtliche Warnungen nicht verfügbar", "Es wird nur die lokale Glätteschätzung angezeigt. Bitte später erneut versuchen.", 68);
-  }
-  tableRow(table, "So wird die lokale Schätzung gebildet",
-    "Lufttemperatur bis 3 °C zusammen mit Niederschlag oder kürzlicher Nässe; bei Frost zusätzlich hohe Luftfeuchte. Kein orangefarbener Hinweis bedeutet nicht sicher eisfrei.", 94);
-  await table.present(false);
+async function showRadarMap(loc, w, radar, alerts) {
+  if (!radar.frames.length || radar.points.length < 4)
+    throw new Error("Radarkarte ist derzeit nicht verfügbar.");
+  const warning = alerts.warnings[0] || null;
+  const payload = JSON.stringify({ lat: loc.latitude, lon: loc.longitude,
+    place: loc.name || coordinates(loc), temperature: w && w.temperature,
+    weather: w ? currentLabel(w, null) : "Wetterdaten fehlen",
+    warning: warning && warning.title || "", cached: radar.cached,
+    zoom: SETTINGS.radarMapZoom, now: radar.now, points: radar.points,
+    frames: radar.frames }).replace(/</g, "\\u003c");
+  const html = `<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+html,body{height:100%;margin:0;background:#101114;font-family:-apple-system,BlinkMacSystemFont,sans-serif;overflow:hidden}.page{height:100%;box-sizing:border-box;padding:8px;padding-top:max(8px,env(safe-area-inset-top));padding-bottom:max(8px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:8px}
+.top{position:relative;z-index:2;padding:10px 12px;border-radius:13px;background:#1a1a1e;color:#f5f5f7;box-shadow:0 3px 18px #0006}
+.place{font-size:17px;font-weight:700}.now{float:right;color:#b8b8bf;font-size:13px;margin-top:3px}.weather{font-size:12px;color:#b8b8bf;margin-top:2px}.warning{margin-top:7px;color:#ffad45;font-size:12px;font-weight:650}
+.mapcard{position:relative;z-index:1;flex:1;min-height:0;overflow:hidden;border-radius:16px;border:1px solid #303036;box-shadow:0 4px 20px #0008}#map{height:100%;width:100%;background:#25262a}
+.panel{position:relative;z-index:2;background:#1a1a1e;color:#f5f5f7;border-radius:15px;padding:11px 13px 10px;box-shadow:0 3px 18px #0008}
+.line{display:flex;align-items:center;gap:10px}.play{border:0;border-radius:50%;width:38px;height:38px;background:#5eb4ff;color:#07131d;font-size:17px;font-weight:800}.time{font-size:16px;font-weight:700}.kind{font-size:11px;color:#a8a8af;margin-top:1px}.range{width:100%;accent-color:#5eb4ff;margin:9px 0 4px}.scale{display:flex;justify-content:space-between;color:#929299;font-size:10px}.legend{display:flex;gap:10px;margin-top:8px;color:#aaaab1;font-size:10px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px}.leaflet-control-attribution{font-size:8px!important}
+.load{position:absolute;z-index:1000;inset:0;display:grid;place-items:center;background:#25262a;color:#ddd;font-size:15px}
+</style></head><body><div class="page">
+<div class="top"><span class="place" id="place"></span><span class="now" id="temp"></span><div class="weather" id="weather"></div><div class="warning" id="warning"></div></div>
+<div class="mapcard"><div id="map"></div><div class="load" id="load">Radarkarte wird geladen …</div></div>
+<div class="panel"><div class="line"><button class="play" id="play">▶</button><div><div class="time" id="time"></div><div class="kind" id="kind"></div></div></div><input class="range" id="range" type="range" min="0" step="1"><div class="scale"><span>−60 Min</span><span>Jetzt</span><span>+60</span><span>+120 Min</span></div><div class="legend"><span><i class="dot" style="background:#50c8ff"></i>leicht</span><span><i class="dot" style="background:#267eff"></i>mäßig</span><span><i class="dot" style="background:#bb35ef"></i>stark</span><span><i class="dot" style="background:#f13e45"></i>sehr stark</span></div></div></div>
+<script id="data" type="application/json">${payload}</script><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
+const d=JSON.parse(document.getElementById('data').textContent),frames=d.frames;
+document.getElementById('place').textContent=d.place;document.getElementById('temp').textContent=d.temperature==null?'':String(d.temperature).replace('.',',')+' °C';document.getElementById('weather').textContent=d.weather+(d.cached?' · gespeicherte Radardaten':'');
+const warn=document.getElementById('warning');warn.textContent=d.warning?'⚠ '+d.warning:'';warn.style.display=d.warning?'block':'none';
+const pts=d.points,lats=pts.map(p=>p[1]),lons=pts.map(p=>p[0]),bounds=[[Math.min(...lats),Math.min(...lons)],[Math.max(...lats),Math.max(...lons)]];
+const map=L.map('map',{zoomControl:false,attributionControl:true});L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);map.fitBounds(bounds,{padding:[20,20]});map.setView([d.lat,d.lon],d.zoom);L.control.zoom({position:'topright'}).addTo(map);
+L.circleMarker([d.lat,d.lon],{radius:7,color:'#fff',weight:2,fillColor:'#147cff',fillOpacity:1}).addTo(map).bindTooltip('Aktueller Standort');
+let overlay=null,index=Math.max(0,frames.findIndex(f=>f.at>=d.now)),timer=null;const range=document.getElementById('range');range.max=frames.length-1;range.value=index;
+function rgba(v){if(v<=0)return[0,0,0,0];if(v<=2)return[80,200,255,145];if(v<=10)return[38,126,255,175];if(v<=35)return[102,61,235,190];if(v<=70)return[187,53,239,205];return[241,62,69,220]}
+function imageFor(grid){const h=grid.length,w=grid[0].length,c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d'),im=x.createImageData(w,h);for(let y=0;y<h;y++)for(let z=0;z<w;z++){const a=rgba(grid[y][z]),i=(y*w+z)*4;im.data[i]=a[0];im.data[i+1]=a[1];im.data[i+2]=a[2];im.data[i+3]=a[3]}x.putImageData(im,0,0);return c.toDataURL('image/png')}
+function clock(ms){return new Date(ms).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}
+function show(i){index=Number(i);range.value=index;const f=frames[index];if(overlay)map.removeLayer(overlay);overlay=L.imageOverlay(imageFor(f.grid),bounds,{opacity:.82,interactive:false,className:'radar'}).addTo(map);const delta=Math.round((f.at-d.now)/300000)*5;document.getElementById('time').textContent=clock(f.at)+(Math.abs(delta)<5?' · jetzt':delta>0?' · +'+delta+' Min':' · '+Math.abs(delta)+' Min zurück');document.getElementById('kind').textContent=f.forecast?'Radarvorhersage im 5-Minuten-Takt':'Radarmessung';}
+range.oninput=e=>{stop();show(e.target.value)};function stop(){if(timer){clearInterval(timer);timer=null}document.getElementById('play').textContent='▶'}document.getElementById('play').onclick=()=>{if(timer){stop();return}document.getElementById('play').textContent='Ⅱ';timer=setInterval(()=>{show(index>=frames.length-1?0:index+1)},650)};
+show(index);document.getElementById('load').style.display='none';
+</script></body></html>`;
+  const web = new WebView();
+  await web.loadHTML(html);
+  await web.present(false);
 }
 function errorWidget(error) {
   const w = new ListWidget();
@@ -532,6 +556,21 @@ async function runWidget() {
   try {
     const loc = await locate();
     const now = Date.now();
+    const radarView = !config.runsInWidget && typeof args !== "undefined" &&
+      args.queryParameters && args.queryParameters.radar === "1";
+    if (radarView) {
+      const mapRange = "&distance=" + SETTINGS.radarMapDistance + "&format=plain&date=" +
+        encodeURIComponent(new Date(now - 60 * MIN).toISOString()) + "&last_date=" +
+        encodeURIComponent(new Date(now + 120 * MIN).toISOString());
+      const mapValues = await Promise.all([fetchJSON("radar", loc, mapRange, 20, "radar-map"),
+        fetchJSON("current_weather", loc, "", 30),
+        fetchJSON("alerts", loc, "", SETTINGS.alertsMaxAge)]);
+      const mapAt = Date.now();
+      await showRadarMap(loc, weatherData(mapValues[1], mapAt),
+        radarMapData(mapValues[0], mapAt), alertData(mapValues[2], mapAt));
+      Script.complete();
+      return;
+    }
     // Explicit window: past hour for wetness, full next two hours for end.
     const range = "&distance=0&format=plain&date=" + encodeURIComponent(new Date(now - 60 * MIN).toISOString()) +
       "&last_date=" + encodeURIComponent(new Date(now + 120 * MIN).toISOString());
@@ -554,12 +593,6 @@ async function runWidget() {
     const tomorrow = tomorrowData(values[3], at);
     const dayAfter = dayData(values[3], at, 2);
     const data = model(radar, weather, alerts, at);
-    const view = typeof args !== "undefined" && args.queryParameters && args.queryParameters.details;
-    if (!config.runsInWidget && view === "1") {
-      await showDetails(loc, weather, radar, alerts, data, at);
-      Script.complete();
-      return;
-    }
     widget = buildWidget(loc, weather, tomorrow, dayAfter, radar, data, at);
   } catch (error) { widget = errorWidget(error); }
   Script.setWidget(widget);
