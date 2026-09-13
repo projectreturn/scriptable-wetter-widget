@@ -407,14 +407,16 @@ function buildWidget(loc, w, tomorrow, dayAfter, radar, m, now) {
   widget.setPadding(14, 16, 7, 16);
   widget.url = detailsURL();
   widget.refreshAfterDate = new Date(now + 5 * MIN);
-  const top = widget.addStack();
-  top.addSpacer();
-  const left = top.addStack();
+  const body = widget.addStack();
+  body.addSpacer();
+  const left = body.addStack();
   left.layoutVertically();
   left.size = new Size(105, 0);
-  const currentTitle = text(left, "AKTUELL · " + (loc.name || coordinates(loc)), 10, COLORS.muted, true);
-  currentTitle.minimumScaleFactor = 0.6;
+  text(left, "AKTUELL", 10, COLORS.muted, true);
   left.addSpacer(2);
+  const place = text(left, loc.name || coordinates(loc), 14, COLORS.text, true);
+  place.minimumScaleFactor = 0.65;
+  left.addSpacer(3);
   const conditions = left.addStack();
   conditions.centerAlignContent();
   const currentSF = SFSymbol.named(currentSymbol(w, m.current)) || SFSymbol.named("questionmark.circle");
@@ -424,8 +426,8 @@ function buildWidget(loc, w, tomorrow, dayAfter, radar, m, now) {
   conditions.addSpacer(6);
   text(conditions, w && w.temperature != null ? w.temperature.toFixed(1).replace(".", ",") + "°" : "—°",
     27, null, true);
-  text(left, m.label, 11, COLORS.text, false, 1);
-  left.addSpacer(2);
+  text(left, m.label, 12, COLORS.text, false, 1);
+  left.addSpacer(3);
   const wind = left.addStack();
   wind.centerAlignContent();
   const windSF = SFSymbol.named("wind") || SFSymbol.named("arrow.right");
@@ -433,15 +435,17 @@ function buildWidget(loc, w, tomorrow, dayAfter, radar, m, now) {
   windImage.imageSize = new Size(12, 12);
   windImage.tintColor = new Color(COLORS.muted);
   wind.addSpacer(4);
-  text(wind, windLabel(w, true), 9, COLORS.muted, false, 1);
-  top.addSpacer(9);
-  dailyBlock(top, "MORGEN", tomorrow);
-  top.addSpacer(9);
-  dailyBlock(top, "ÜBERMORGEN", dayAfter);
-  top.addSpacer();
+  text(wind, windLabel(w, true), 10, COLORS.muted, false, 1);
 
-  widget.addSpacer(5);
-  const notice = widget.addStack();
+  body.addSpacer(10);
+  const right = body.addStack();
+  right.layoutVertically();
+  const forecast = right.addStack();
+  dailyBlock(forecast, "MORGEN", tomorrow);
+  forecast.addSpacer(9);
+  dailyBlock(forecast, "ÜBERMORGEN", dayAfter);
+  right.addSpacer(6);
+  const notice = right.addStack();
   notice.backgroundColor = new Color("161618");
   notice.cornerRadius = 10;
   notice.setPadding(5, 10, 5, 10);
@@ -457,8 +461,9 @@ function buildWidget(loc, w, tomorrow, dayAfter, radar, m, now) {
   noticeText.addSpacer(1);
   text(noticeText, m.notice.detail, 9, COLORS.muted, false, 1);
   notice.addSpacer();
+  body.addSpacer();
 
-  widget.addSpacer(2);
+  widget.addSpacer(3);
   const bottom = widget.addStack();
   bottom.size = new Size(0, 9);
   bottom.centerAlignContent();

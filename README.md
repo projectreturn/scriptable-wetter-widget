@@ -12,10 +12,9 @@ Echte Scriptable-Vorschau mit dem Beispielstandort Berlin:
 
 ## Anzeige
 
-- **Oben links:** „Aktuell“ und Ort, Wetterzustand, Temperatur und Windrichtung.
-- **Oben mittig:** Wetter und Tiefst-/Höchsttemperatur für morgen.
-- **Oben rechts:** Wetter und Tiefst-/Höchsttemperatur für übermorgen.
-- **Darunter:** ein Klartext-Hinweis, ob und in wie vielen Minuten Regen oder
+- **Links über die gesamte Höhe:** aktueller Ort, Wetterzustand, Temperatur und Windrichtung.
+- **Rechts oben:** Wetter und Tiefst-/Höchsttemperatur für morgen und übermorgen.
+- **Nur rechts darunter:** ein Klartext-Hinweis, ob und in wie vielen Minuten Regen oder
   Schnee beginnt und bis wann er voraussichtlich anhält. Der Beginn wird im
   5-Minuten-Raster angegeben.
 - **Ganz unten:** Stand der verwendeten Wetterdaten.
