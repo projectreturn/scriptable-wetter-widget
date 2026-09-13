@@ -8,7 +8,7 @@ eine klare Regen-, Schnee- oder Glätteinformation für die nächsten 30 Minuten
 
 Echte Scriptable-Vorschau mit dem Beispielstandort Berlin:
 
-<img src="screenshots/widget-berlin.jpg" alt="Scriptable Wetter Widget für Berlin" width="320">
+<img src="screenshots/widget-berlin-v2.jpg" alt="Scriptable Wetter Widget für Berlin" width="320">
 
 ## Anzeige
 
