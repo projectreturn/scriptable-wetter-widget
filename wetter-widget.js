@@ -1,14 +1,13 @@
-// RegenWidget 3.0 — mittleres, schwarzes Scriptable-Widget.
+// WetterWidget 4.0 — mittleres, schwarzes Scriptable-Widget.
 // Daten: DWD-RV, Stationsmessungen und amtliche Gebietswarnungen via Bright Sky.
 // Niederschlagsart und lokales Glätterisiko sind Näherungen; im Widget werden
 // bewusst keine Datenanbieter eingeblendet.
 // Einmal in Scriptable starten und Standort erlauben. Komplett ersetzen.
 const SETTINGS = {
   apiBase: "https://api.brightsky.dev",
-  minutes: [5, 10, 15, 30],
-  rainThreshold: 2, // 0,02 mm/5 Minuten; darunter "trocken"
+  rainThreshold: 1, // 0,01 mm/5 Minuten: auch sehr leichter Regen zählt
   radarMaxAge: 20, // Minuten seit DWD-Modelllauf, nicht seit Download
-  weatherMaxAge: 90,
+  weatherMaxAge: 40,
   forecastMaxAge: 360,
   alertsMaxAge: 30,
 };
@@ -100,7 +99,8 @@ function weatherData(payload, now) {
     (payload.json.sources || []).find(s => String(s.id) === String(w.source_id)) || null;
   return { at: at, temperature: number(w.temperature), humidity: number(w.relative_humidity),
     wind: number(w.wind_speed_10), direction: number(w.wind_direction_10), gust: number(w.wind_gust_speed_10),
-    recent: number(w.precipitation_60), icon: w.icon, condition: w.condition,
+    recent10: number(w.precipitation_10), recent: number(w.precipitation_60),
+    icon: w.icon, condition: w.condition,
     station: source && source.station_name || null,
     stationDistance: source && number(source.distance),
     cached: payload.cached };
@@ -165,6 +165,10 @@ function frameAt(frames, at) {
   return frames.find(f => f.at >= at && f.at - at < 5 * MIN) || null;
 }
 function wet(f) { return !!f && f.value != null && f.value >= SETTINGS.rainThreshold; }
+function stationWet(w) {
+  return !!w && (/^(rain|sleet|snow|hail|thunderstorm)$/.test(String(w.condition || "")) ||
+    !w.condition && w.recent10 != null && w.recent10 > 0);
+}
 function strength(f) {
   if (!f || f.value == null) return "keine Daten";
   const rate = f.value * 0.12;
@@ -206,15 +210,16 @@ function windLabel(w, compact) {
 function currentLabel(w, current) {
   if (wet(current)) return type(current, w).name + " · " + strength(current);
   if (!w) return current && current.value != null ? "Jetzt trocken" : "Wetterdaten fehlen";
-  // A dry radar pixel does not imply sunshine.
+  // An explicit DWD precipitation report takes priority over a generic cloud icon.
   return weatherLabel(w.icon, w.condition, true);
 }
-function weatherLabel(icon, condition, station) {
+function weatherLabel(icon, condition) {
   const labels = { "clear-day": "Sonnig", "clear-night": "Klar", "partly-cloudy-day": "Wolkig",
     "partly-cloudy-night": "Wolkig", cloudy: "Bedeckt", fog: "Nebel", wind: "Windig",
     thunderstorm: "Gewitter", rain: "Regen", sleet: "Regen/Schnee", snow: "Schnee", hail: "Hagel" };
-  const label = labels[icon] || (condition === "dry" ? "Trocken" : "Wetter unklar");
-  return station && /^(Regen|Regen\/Schnee|Schnee)$/.test(label) ? label + " (Station)" : label;
+  const precipitation = /^(rain|sleet|snow|hail|thunderstorm)$/;
+  const key = precipitation.test(String(condition || "")) ? condition : icon;
+  return labels[key] || (condition === "dry" ? "Trocken" : "Wetter unklar");
 }
 function eventText(frames, w, now) {
   const current = frameAt(frames, now);
@@ -252,18 +257,24 @@ function eventText(frames, w, now) {
   }
   return sentence;
 }
-function durationLine(summary) {
-  let match = summary.match(/mindestens bis (\d{2}:\d{2})/);
-  if (match) return "Mind. bis " + match[1];
-  match = summary.match(/bis(?: ca\.)? (\d{2}:\d{2})(?:$|\s)/);
-  if (match) return "Bis ca. " + match[1];
-  return /Ende offen/.test(summary) ? "Ende noch offen" : "";
+function precipitationPhrase(frame, w) {
+  const phase = type(frame, w).name;
+  const level = strength(frame);
+  const adjective = level === "stark" ? "Starker" : level === "mäßig" ? "Mäßiger" : "Leichter";
+  if (phase === "Schnee") return adjective + " Schneefall";
+  if (phase === "Regen/Schnee") return adjective + " Schneeregen";
+  if (phase === "Niederschl.") return adjective + " Niederschlag";
+  return adjective + " Regen";
 }
-function changeText(frames, w, now, officialIce) {
-  if (officialIce === true || officialIce && officialIce.now)
-    return { text: "Amtliche Glättewarnung aktiv", color: COLORS.warning, important: true };
-  if (officialIce && officialIce.soon)
-    return { text: "Glättewarnung ab " + clock(officialIce.soon.from), color: COLORS.warning, important: true };
+function precipitationNotice(frames, w, now, officialIce) {
+  if (officialIce && officialIce.now)
+    return { title: "Amtliche Glättewarnung aktiv", detail: "Bitte mit glatten Wegen rechnen",
+      symbol: "exclamationmark.triangle.fill", color: COLORS.warning };
+  if (officialIce && officialIce.soon) {
+    const mins = Math.max(5, Math.ceil((officialIce.soon.from - now) / (5 * MIN)) * 5);
+    return { title: "Glättewarnung in ca. " + mins + " Min", detail: "Amtliche Gebietswarnung",
+      symbol: "exclamationmark.triangle.fill", color: COLORS.warning };
+  }
   const current = frameAt(frames, now);
   const timeline = [];
   for (let n = 0; n <= 120; n += 5) {
@@ -271,29 +282,42 @@ function changeText(frames, w, now, officialIce) {
     if (!f || f.value == null) break;
     timeline.push(f);
   }
-  if (!timeline.length) return { text: "Prognose derzeit nicht verfügbar", color: COLORS.muted, important: false };
-  const firstWet = timeline.findIndex(wet);
-  if (!wet(current)) {
-    if (firstWet >= 0 && timeline[firstWet].at <= now + 35 * MIN) {
-      const mins = Math.max(0, Math.round((timeline[firstWet].at - 5 * MIN - now) / MIN / 5) * 5);
-      return { text: type(timeline[firstWet], w).name + " beginnt in ca. " + mins + " Min",
-        color: type(timeline[firstWet], w).color, important: true };
-    }
-    return { text: "Bleibt voraussichtlich\ntrocken", color: COLORS.muted, important: false };
+  if (!timeline.length)
+    return { title: "Niederschlagsprognose fehlt", detail: "Später erneut versuchen",
+      symbol: "questionmark.circle", color: COLORS.muted };
+  const firstWet = timeline.findIndex(f => wet(f) && f.at - 5 * MIN <= now + 30 * MIN);
+  if (firstWet < 0 && stationWet(w)) {
+    const phase = type({ value: SETTINGS.rainThreshold }, w);
+    return { title: weatherLabel(w.icon, w.condition) + " jetzt",
+      detail: "Ende derzeit nicht sicher bestimmbar", symbol: phase.symbol, color: phase.color };
   }
-  const stronger = timeline.find(f => f.at <= now + 30 * MIN && wet(f) && f.value > current.value * 1.8 &&
-    strength(f) !== strength(current));
-  if (stronger) return { text: "Wird in ca. " + Math.max(5,
-    Math.round((stronger.at - now) / MIN / 5) * 5) + " Min stärker", color: type(stronger, w).color, important: true };
-  for (let i = 1; i + 1 < timeline.length; i++) {
+  if (firstWet < 0 && iceRisk(w, false))
+    return { title: "Örtliches Glätterisiko", detail: "Frost und Feuchtigkeit möglich",
+      symbol: "snowflake", color: COLORS.warning };
+  if (firstWet < 0)
+    return { title: "Nächste 30 Min trocken", detail: "Kein Regen oder Schnee erwartet",
+      symbol: "cloud.fill", color: COLORS.muted };
+  const first = timeline[firstWet];
+  let end = null;
+  for (let i = firstWet + 1; i + 1 < timeline.length; i++) {
     if (!wet(timeline[i]) && !wet(timeline[i + 1])) {
-      const end = timeline[i].at - 5 * MIN;
-      if (end <= now + 30 * MIN)
-        return { text: "Lässt gegen " + clock(end) + " nach", color: type(current, w).color, important: true };
+      end = timeline[i].at - 5 * MIN;
       break;
     }
   }
-  return { text: eventText(frames, w, now), color: COLORS.muted, important: false };
+  const last = timeline[timeline.length - 1].at;
+  const phase = type(first, w);
+  const isCurrent = wet(current) || stationWet(w);
+  const start = first.at - 5 * MIN;
+  const delay = Math.max(5, Math.ceil(Math.max(0, start - now) / (5 * MIN)) * 5);
+  const title = precipitationPhrase(first, w) + (isCurrent ? " jetzt" : " in ca. " + delay + " Min");
+  let detail = end ? "Voraussichtlich bis " + clock(end) : "Mindestens bis " + clock(last);
+  let color = phase.color;
+  if (iceRisk(w, true) && phase.name === "Regen") {
+    detail = "Glätterisiko · " + detail.toLowerCase();
+    color = COLORS.warning;
+  }
+  return { title: title, detail: detail, symbol: phase.symbol, color: color };
 }
 function model(radar, w, alerts, now) {
   // Backwards-compatible call form used by older copies of the local tests.
@@ -306,19 +330,10 @@ function model(radar, w, alerts, now) {
   const warningNow = warnings.find(a => activeAt(a, now)) || null;
   const warningSoon = warnings.find(a => Number.isFinite(a.from) && a.from > now && a.from <= now + 30 * MIN) || null;
   const current = frameAt(radar.frames, now);
-  const checks = SETTINGS.minutes.map(minutes => {
-    const at = now + minutes * MIN;
-    const f = frameAt(radar.frames, at);
-    const moisture = radar.frames.some(p => p.at >= now - 5 * MIN && p.at <= at && wet(p));
-    const officialIce = warnings.some(a => activeAt(a, at));
-    return { minutes: minutes, at: at, type: type(f, w), strength: strength(f),
-      ice: officialIce || iceRisk(w, moisture), officialIce: officialIce, frame: f };
-  });
   const summary = eventText(radar.frames, w, now);
-  return { current: current, checks: checks, label: currentLabel(w, current),
-    summary: summary, duration: durationLine(summary),
-    change: changeText(radar.frames, w, now, { now: warningNow, soon: warningSoon }),
-    officialIce: !!(warningNow || warningSoon), ice: checks.some(c => c.ice) || iceRisk(w, wet(current)) };
+  return { current: current, label: currentLabel(w, current), summary: summary,
+    notice: precipitationNotice(radar.frames, w, now, { now: warningNow, soon: warningSoon }),
+    officialIce: !!(warningNow || warningSoon), ice: iceRisk(w, wet(current)) };
 }
 
 function text(parent, value, size, color, bold, lines) {
@@ -347,6 +362,8 @@ function centeredIcon(parent, name, color) {
 }
 function currentSymbol(w, current) {
   if (wet(current)) return type(current, w).symbol;
+  if (w && /^(rain|sleet|snow|hail|thunderstorm)$/.test(String(w.condition || "")))
+    return weatherSymbol(w.condition);
   return weatherSymbol(w && w.icon);
 }
 function weatherSymbol(icon) {
@@ -366,7 +383,7 @@ function detailsURL() {
 function dailyBlock(parent, title, forecast) {
   const block = parent.addStack();
   block.layoutVertically();
-  block.size = new Size(82, 0);
+  block.size = new Size(84, 0);
   text(block, title, 10, COLORS.muted, true);
   block.addSpacer(2);
   const values = block.addStack();
@@ -380,39 +397,35 @@ function dailyBlock(parent, title, forecast) {
     ? Math.round(forecast.low) + "–" + Math.round(forecast.high) + "°" : "—°";
   text(values, temperatures, 13, COLORS.text, true);
   block.addSpacer(2);
-  const label = text(block, forecast ? weatherLabel(forecast.icon, forecast.condition, false) : "Keine Daten",
+  const label = text(block, forecast ? weatherLabel(forecast.icon, forecast.condition) : "Keine Daten",
     10, COLORS.muted, false);
   label.minimumScaleFactor = 0.65;
 }
 function buildWidget(loc, w, tomorrow, dayAfter, radar, m, now) {
   const widget = new ListWidget();
   widget.backgroundColor = Color.black();
-  // Optische Zentrierung: Die große linke Aktuell-Spalte wirkt schwerer.
-  widget.setPadding(20, 16, 16, 16);
+  widget.setPadding(14, 16, 7, 16);
   widget.url = detailsURL();
   widget.refreshAfterDate = new Date(now + 5 * MIN);
-  const outer = widget.addStack();
-  outer.addSpacer();
-  const body = outer.addStack();
-  outer.addSpacer();
-  const left = body.addStack();
+  const top = widget.addStack();
+  top.addSpacer();
+  const left = top.addStack();
   left.layoutVertically();
-  left.size = new Size(101, 0);
-  text(left, loc.cached ? "LETZTER ORT" : "JETZT", 10, COLORS.muted, true);
+  left.size = new Size(105, 0);
+  const currentTitle = text(left, "AKTUELL · " + (loc.name || coordinates(loc)), 10, COLORS.muted, true);
+  currentTitle.minimumScaleFactor = 0.6;
   left.addSpacer(2);
-  text(left, loc.name || coordinates(loc), 14, null, true);
-  left.addSpacer(3);
   const conditions = left.addStack();
   conditions.centerAlignContent();
   const currentSF = SFSymbol.named(currentSymbol(w, m.current)) || SFSymbol.named("questionmark.circle");
   const currentImage = conditions.addImage(currentSF.image);
-  currentImage.imageSize = new Size(28, 28);
+  currentImage.imageSize = new Size(27, 27);
   currentImage.tintColor = new Color(COLORS.text);
   conditions.addSpacer(6);
   text(conditions, w && w.temperature != null ? w.temperature.toFixed(1).replace(".", ",") + "°" : "—°",
-    28, null, true);
-  text(left, m.label, 12, COLORS.text, false, 1);
-  left.addSpacer(3);
+    27, null, true);
+  text(left, m.label, 11, COLORS.text, false, 1);
+  left.addSpacer(2);
   const wind = left.addStack();
   wind.centerAlignContent();
   const windSF = SFSymbol.named("wind") || SFSymbol.named("arrow.right");
@@ -420,57 +433,34 @@ function buildWidget(loc, w, tomorrow, dayAfter, radar, m, now) {
   windImage.imageSize = new Size(12, 12);
   windImage.tintColor = new Color(COLORS.muted);
   wind.addSpacer(4);
-  text(wind, windLabel(w, true), 10, COLORS.muted, false, 1);
-  body.addSpacer(8);
-  const middle = body.addStack();
-  middle.layoutVertically();
-  middle.size = new Size(82, 0);
-  dailyBlock(middle, "MORGEN", tomorrow);
-  middle.addSpacer(8);
-  dailyBlock(middle, "ÜBERMORGEN", dayAfter);
-  body.addSpacer(8);
-  const right = body.addStack();
-  right.layoutVertically();
-  right.size = new Size(105, 0);
-  m.checks.forEach((c, i) => {
-    const row = right.addStack();
-    row.centerAlignContent();
-    const time = row.addStack();
-    time.size = new Size(26, 0);
-    text(time, "+" + c.minutes, 11, COLORS.muted, true);
-    const shown = c.ice
-      ? { name: "Glätte", symbol: "exclamationmark.triangle.fill", color: COLORS.warning }
-      : c.type;
-    if (shown.name === "Trocken") {
-      row.addSpacer(12);
-    } else {
-      const sf = SFSymbol.named(shown.symbol) || SFSymbol.named("questionmark");
-      const icon = row.addImage(sf.image);
-      icon.imageSize = new Size(12, 12);
-      icon.tintColor = new Color(shown.color);
-    }
-    row.addSpacer(3);
-    const extra = shown.name === "Regen/Schnee" || c.ice ? "" : c.strength;
-    const label = text(row, shown.name + (extra && extra !== "keine Daten" ? " · " + extra : ""),
-      10, shown.color, true);
-    label.minimumScaleFactor = 0.65;
-    if (i < 3) right.addSpacer(4);
-  });
-  right.addSpacer(7);
-  const changeLines = m.change.text.split("\n");
-  if (changeLines.length === 2) {
-    text(right, changeLines[0], 10, m.change.color, m.change.important, 1);
-    text(right, changeLines[1], 10, m.change.color, m.change.important, 1);
-  } else {
-    text(right, m.change.text, 11, m.change.color, m.change.important, 2);
-  }
-  if (m.change.important && m.duration && !m.change.text.startsWith("Lässt")) {
-    right.addSpacer(1);
-    text(right, m.duration, 10, COLORS.muted, false, 1);
-  }
-  widget.addSpacer();
+  text(wind, windLabel(w, true), 9, COLORS.muted, false, 1);
+  top.addSpacer(9);
+  dailyBlock(top, "MORGEN", tomorrow);
+  top.addSpacer(9);
+  dailyBlock(top, "ÜBERMORGEN", dayAfter);
+  top.addSpacer();
+
+  widget.addSpacer(5);
+  const notice = widget.addStack();
+  notice.backgroundColor = new Color("161618");
+  notice.cornerRadius = 10;
+  notice.setPadding(5, 10, 5, 10);
+  notice.centerAlignContent();
+  const noticeSF = SFSymbol.named(m.notice.symbol) || SFSymbol.named("questionmark.circle");
+  const noticeIcon = notice.addImage(noticeSF.image);
+  noticeIcon.imageSize = new Size(17, 17);
+  noticeIcon.tintColor = new Color(m.notice.color);
+  notice.addSpacer(8);
+  const noticeText = notice.addStack();
+  noticeText.layoutVertically();
+  text(noticeText, m.notice.title, 12, m.notice.color, true, 1);
+  noticeText.addSpacer(1);
+  text(noticeText, m.notice.detail, 9, COLORS.muted, false, 1);
+  notice.addSpacer();
+
+  widget.addSpacer(2);
   const bottom = widget.addStack();
-  bottom.size = new Size(0, 12);
+  bottom.size = new Size(0, 9);
   bottom.centerAlignContent();
   bottom.addSpacer();
   const dataAt = radar.run != null ? radar.run : w && w.at;

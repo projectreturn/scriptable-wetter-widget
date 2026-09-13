@@ -2,7 +2,7 @@
 
 Ein kompaktes, mittleres iOS-Widget für [Scriptable](https://scriptable.app/).
 Es zeigt das aktuelle Wetter, die Aussichten für morgen und übermorgen sowie
-Regen, Schnee oder Glätterisiko in den nächsten 5, 10, 15 und 30 Minuten.
+eine klare Regen-, Schnee- oder Glätteinformation für die nächsten 30 Minuten.
 
 ## Screenshot
 
@@ -12,11 +12,13 @@ Echte Scriptable-Vorschau mit dem Beispielstandort Berlin:
 
 ## Anzeige
 
-- **Links:** Ort, aktueller Wetterzustand, Temperatur und Windrichtung.
-- **Mitte:** Wetter und Tiefst-/Höchsttemperatur für morgen und übermorgen.
-- **Rechts:** kurzfristige Entwicklung in 5-Minuten-Schritten sowie Beginn,
-  Stärke und voraussichtliches Ende von Niederschlag.
-- **Unten:** Zeitpunkt der letzten Berechnung.
+- **Oben links:** „Aktuell“ und Ort, Wetterzustand, Temperatur und Windrichtung.
+- **Oben mittig:** Wetter und Tiefst-/Höchsttemperatur für morgen.
+- **Oben rechts:** Wetter und Tiefst-/Höchsttemperatur für übermorgen.
+- **Darunter:** ein Klartext-Hinweis, ob und in wie vielen Minuten Regen oder
+  Schnee beginnt und bis wann er voraussichtlich anhält. Der Beginn wird im
+  5-Minuten-Raster angegeben.
+- **Ganz unten:** Stand der verwendeten Wetterdaten.
 
 ## Installation
 
@@ -39,3 +41,7 @@ Server erforderlich.
 Die Koordinaten werden für die Wetterabfragen an Bright Sky übermittelt. Die
 angezeigte Niederschlagsart und das örtliche Glätterisiko sind Näherungen und
 keine Garantie für den Zustand einer bestimmten Straße.
+
+Bereits die kleinste vom Radar gemeldete Niederschlagsmenge von 0,01 mm je
+5 Minuten wird als leichter Regen erkannt. Eine ausdrückliche aktuelle
+DWD-Stationsmeldung wie „Regen“ hat Vorrang vor einem allgemeinen Wolkensymbol.
