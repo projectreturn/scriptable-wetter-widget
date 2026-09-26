@@ -1,4 +1,4 @@
-// WetterWidget 4.1 TEST — mit antippbarer Radar-Zeitleiste.
+// WetterWidget 4.2 — sinnvolle Tagesaussage und antippbare Radar-Zeitleiste.
 // Daten: DWD-RV, Stationsmessungen und amtliche Gebietswarnungen via Bright Sky.
 // Niederschlagsart und lokales Glätterisiko sind Näherungen; im Widget werden
 // bewusst keine Datenanbieter eingeblendet.
@@ -6,6 +6,7 @@
 const SETTINGS = {
   apiBase: "https://api.brightsky.dev",
   rainThreshold: 1, // 0,01 mm/5 Minuten: auch sehr leichter Regen zählt
+  hourlyRainThreshold: 0.05, // mm/Stunde: minimale sinnvolle Schwelle der Tagesprognose
   radarMapDistance: 10000, // Meter je Richtung werden für die Karte geladen
   radarMapZoom: 12, // Startansicht; höher bedeutet näher herangezoomt
   radarMaxAge: 20, // Minuten seit DWD-Modelllauf, nicht seit Download
@@ -127,6 +128,32 @@ function dayData(payload, now, daysAhead) {
     icon: representative.icon, condition: representative.condition, cached: payload.cached };
 }
 function tomorrowData(payload, now) { return dayData(payload, now, 1); }
+function endOfToday(now) {
+  const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
+  return end.getTime();
+}
+function hourlyWet(row) {
+  if (!row) return false;
+  if (row.precipitation != null) return row.precipitation >= SETTINGS.hourlyRainThreshold;
+  return /^(rain|sleet|snow|hail|thunderstorm)$/.test(String(row.condition || ""));
+}
+function todayPrecipitationData(payload, now) {
+  const raw = payload.json && payload.json.weather || [];
+  const today = new Date(now);
+  const rows = raw.map(function (row) {
+    return { at: Date.parse(row.timestamp), precipitation: number(row.precipitation),
+      probability: number(row.precipitation_probability), temperature: number(row.temperature),
+      condition: row.condition, icon: row.icon };
+  }).filter(function (row) {
+    const date = new Date(row.at);
+    return Number.isFinite(row.at) && date.getFullYear() === today.getFullYear() &&
+      date.getMonth() === today.getMonth() && date.getDate() === today.getDate();
+  }).sort((a, b) => a.at - b.at);
+  const last = rows.length ? rows[rows.length - 1].at : null;
+  return { rows: rows, available: rows.length > 0,
+    coversEnd: last != null && last >= endOfToday(now) - 90 * MIN, cached: payload.cached };
+}
 function alertData(payload, now) {
   const json = payload.json || {};
   const pattern = /gl[aä]tte|glatteis|vereisung|überfrier/i;
@@ -136,7 +163,7 @@ function alertData(payload, now) {
     const from = Date.parse(a.alert_onset || a.onset || a.alert_effective || a.effective || a.alert_sent || a.sent || "");
     const until = Date.parse(a.alert_expires || a.expires || a.ends || "");
     return pattern.test(words) && !/cancel|expire|test/i.test(state) &&
-      (!Number.isFinite(from) || from <= now + 30 * MIN) && (!Number.isFinite(until) || until > now);
+      (!Number.isFinite(from) || from <= endOfToday(now)) && (!Number.isFinite(until) || until > now);
   }).map(function (a) {
     return { title: a.headline_de || a.headline || a.event_de || a.event || "Amtliche Glättewarnung",
       from: Date.parse(a.alert_onset || a.onset || a.alert_effective || a.effective || ""),
@@ -251,8 +278,8 @@ function eventText(frames, w, now) {
   }
   if (!timeline.length) return "Niederschlagsprognose fehlt";
   const start = timeline.findIndex(wet);
-  if (start < 0) return timeline[timeline.length - 1].at >= now + 30 * MIN
-    ? "Nächste 30 Min voraussichtlich trocken"
+  if (start < 0) return timeline[timeline.length - 1].at >= now + 115 * MIN
+    ? "Nächste 2 Std. voraussichtlich trocken"
     : "Prognose nur bis " + clock(timeline[timeline.length - 1].at);
   const first = timeline[start];
   const name = type(first, w).name;
@@ -286,13 +313,29 @@ function precipitationPhrase(frame, w) {
   if (phase === "Niederschl.") return adjective + " Niederschlag";
   return adjective + " Regen";
 }
-function precipitationNotice(frames, w, now, officialIce) {
+function forecastPhase(row) {
+  const condition = String(row && (row.condition || row.icon) || "");
+  if (condition === "snow") return { name: "Schnee", phrase: "Schneefall", symbol: "snowflake", color: COLORS.snow };
+  if (row && row.temperature != null && row.temperature <= 0 && condition !== "snow")
+    return { name: "Glatteis", phrase: "Glatteis möglich", symbol: "exclamationmark.triangle.fill",
+      color: COLORS.warning };
+  if (condition === "sleet" || row && row.temperature != null && row.temperature <= 2)
+    return { name: "Regen/Schnee", phrase: "Schneeregen", symbol: "cloud.sleet.fill", color: COLORS.snow };
+  if (condition === "hail") return { name: "Hagel", phrase: "Hagel", symbol: "cloud.hail.fill", color: COLORS.warning };
+  if (condition === "thunderstorm")
+    return { name: "Gewitter", phrase: "Gewitter", symbol: "cloud.bolt.rain.fill", color: COLORS.warning };
+  return { name: "Regen", phrase: "Regen", symbol: "cloud.rain.fill", color: COLORS.wet };
+}
+function delayText(at, now) {
+  const minutes = Math.max(5, Math.ceil(Math.max(0, at - now) / (5 * MIN)) * 5);
+  return minutes <= 120 ? "in ca. " + minutes + " Min" : "ab ca. " + clock(at);
+}
+function precipitationNotice(frames, w, now, officialIce, today) {
   if (officialIce && officialIce.now)
     return { title: "Amtliche Glättewarnung aktiv", detail: "Bitte mit glatten Wegen rechnen",
       symbol: "exclamationmark.triangle.fill", color: COLORS.warning };
   if (officialIce && officialIce.soon) {
-    const mins = Math.max(5, Math.ceil((officialIce.soon.from - now) / (5 * MIN)) * 5);
-    return { title: "Glättewarnung in ca. " + mins + " Min", detail: "Amtliche Gebietswarnung",
+    return { title: "Glättewarnung " + delayText(officialIce.soon.from, now), detail: "Amtliche Gebietswarnung",
       symbol: "exclamationmark.triangle.fill", color: COLORS.warning };
   }
   const current = frameAt(frames, now);
@@ -302,10 +345,7 @@ function precipitationNotice(frames, w, now, officialIce) {
     if (!f || f.value == null) break;
     timeline.push(f);
   }
-  if (!timeline.length)
-    return { title: "Niederschlagsprognose fehlt", detail: "Später erneut versuchen",
-      symbol: "questionmark.circle", color: COLORS.muted };
-  const firstWet = timeline.findIndex(f => wet(f) && f.at - 5 * MIN <= now + 30 * MIN);
+  const firstWet = timeline.findIndex(wet);
   if (firstWet < 0 && stationWet(w)) {
     const phase = type({ value: SETTINGS.rainThreshold }, w);
     return { title: weatherLabel(w.icon, w.condition) + " jetzt",
@@ -314,45 +354,70 @@ function precipitationNotice(frames, w, now, officialIce) {
   if (firstWet < 0 && iceRisk(w, false))
     return { title: "Örtliches Glätterisiko", detail: "Frost und Feuchtigkeit möglich",
       symbol: "snowflake", color: COLORS.warning };
-  if (firstWet < 0)
-    return { title: "Nächste 30 Min trocken", detail: "Kein Regen oder Schnee erwartet",
-      symbol: "cloud.fill", color: COLORS.muted };
-  const first = timeline[firstWet];
-  let end = null;
-  for (let i = firstWet + 1; i + 1 < timeline.length; i++) {
-    if (!wet(timeline[i]) && !wet(timeline[i + 1])) {
-      end = timeline[i].at - 5 * MIN;
-      break;
+  if (firstWet >= 0) {
+    const first = timeline[firstWet];
+    let end = null;
+    for (let i = firstWet + 1; i + 1 < timeline.length; i++) {
+      if (!wet(timeline[i]) && !wet(timeline[i + 1])) {
+        end = timeline[i].at - 5 * MIN;
+        break;
+      }
     }
+    const last = timeline[timeline.length - 1].at;
+    const phase = type(first, w);
+    const isCurrent = wet(current) || stationWet(w);
+    const start = first.at - 5 * MIN;
+    const title = precipitationPhrase(first, w) + (isCurrent ? " jetzt" : " " + delayText(start, now));
+    let detail = end ? "Voraussichtlich bis " + clock(end) : "Mindestens bis " + clock(last);
+    let color = phase.color;
+    if (iceRisk(w, true) && phase.name === "Regen") {
+      detail = "Glätterisiko · " + detail.toLowerCase();
+      color = COLORS.warning;
+    }
+    return { title: title, detail: detail, symbol: phase.symbol, color: color };
   }
-  const last = timeline[timeline.length - 1].at;
-  const phase = type(first, w);
-  const isCurrent = wet(current) || stationWet(w);
-  const start = first.at - 5 * MIN;
-  const delay = Math.max(5, Math.ceil(Math.max(0, start - now) / (5 * MIN)) * 5);
-  const title = precipitationPhrase(first, w) + (isCurrent ? " jetzt" : " in ca. " + delay + " Min");
-  let detail = end ? "Voraussichtlich bis " + clock(end) : "Mindestens bis " + clock(last);
-  let color = phase.color;
-  if (iceRisk(w, true) && phase.name === "Regen") {
-    detail = "Glätterisiko · " + detail.toLowerCase();
-    color = COLORS.warning;
+
+  const radarUntil = timeline.length ? timeline[timeline.length - 1].at : now;
+  const forecastRows = today && today.rows || [];
+  // Das 5-Minuten-Radar ist für die nächsten zwei Stunden genauer als die Stundenprognose.
+  const forecastStart = timeline.length ? radarUntil : now - 30 * MIN;
+  const nextForecast = forecastRows.find(row => row.at > forecastStart && hourlyWet(row));
+  if (nextForecast) {
+    const phase = forecastPhase(nextForecast);
+    const probability = nextForecast.probability != null
+      ? " · " + Math.round(nextForecast.probability) + " % Wahrscheinlichkeit" : "";
+    return { title: phase.phrase + " " + delayText(nextForecast.at, now),
+      detail: "Stündliche Tagesprognose" + probability, symbol: phase.symbol, color: phase.color };
   }
-  return { title: title, detail: detail, symbol: phase.symbol, color: color };
+
+  if (today && today.coversEnd) {
+    const wetEarlier = forecastRows.some(row => row.at <= forecastStart && hourlyWet(row));
+    return { title: wetEarlier ? "Ab jetzt trocken" : "Heute bleibt es trocken",
+      detail: wetEarlier ? "Bis Tagesende nichts mehr erwartet" : "Kein Regen oder Schnee erwartet",
+      symbol: "sun.max.fill", color: COLORS.muted };
+  }
+  if (timeline.length)
+    return { title: "Mindestens 2 Std. trocken", detail: "Tagesprognose nicht vollständig",
+      symbol: "cloud.fill", color: COLORS.muted };
+  return { title: "Niederschlagsprognose fehlt", detail: "Später erneut versuchen",
+    symbol: "questionmark.circle", color: COLORS.muted };
 }
-function model(radar, w, alerts, now) {
+function model(radar, w, alerts, today, now) {
   // Backwards-compatible call form used by older copies of the local tests.
-  if (typeof alerts === "number") { now = alerts; alerts = null; }
+  if (typeof alerts === "number") { now = alerts; alerts = null; today = null; }
+  if (typeof today === "number") { now = today; today = null; }
   const warnings = alerts && alerts.warnings || [];
   const activeAt = function (warning, at) {
     return (!Number.isFinite(warning.from) || warning.from <= at) &&
       (!Number.isFinite(warning.until) || warning.until > at);
   };
   const warningNow = warnings.find(a => activeAt(a, now)) || null;
-  const warningSoon = warnings.find(a => Number.isFinite(a.from) && a.from > now && a.from <= now + 30 * MIN) || null;
+  const warningSoon = warnings.filter(a => Number.isFinite(a.from) && a.from > now && a.from <= endOfToday(now))
+    .sort((a, b) => a.from - b.from)[0] || null;
   const current = frameAt(radar.frames, now);
   const summary = eventText(radar.frames, w, now);
   return { current: current, label: currentLabel(w, current), summary: summary,
-    notice: precipitationNotice(radar.frames, w, now, { now: warningNow, soon: warningSoon }),
+    notice: precipitationNotice(radar.frames, w, now, { now: warningNow, soon: warningSoon }, today),
     officialIce: !!(warningNow || warningSoon), ice: iceRisk(w, wet(current)) };
 }
 
@@ -574,25 +639,25 @@ async function runWidget() {
     // Explicit window: past hour for wetness, full next two hours for end.
     const range = "&distance=0&format=plain&date=" + encodeURIComponent(new Date(now - 60 * MIN).toISOString()) +
       "&last_date=" + encodeURIComponent(new Date(now + 120 * MIN).toISOString());
-    const tomorrowStart = new Date(now);
-    tomorrowStart.setHours(0, 0, 0, 0);
-    tomorrowStart.setDate(tomorrowStart.getDate() + 1);
-    const tomorrowEnd = new Date(tomorrowStart);
-    tomorrowEnd.setDate(tomorrowEnd.getDate() + 2);
-    tomorrowEnd.setMinutes(tomorrowEnd.getMinutes() - 1);
-    const tomorrowRange = "&date=" + encodeURIComponent(tomorrowStart.toISOString()) +
-      "&last_date=" + encodeURIComponent(tomorrowEnd.toISOString());
+    const forecastStart = new Date(now);
+    forecastStart.setHours(0, 0, 0, 0);
+    const forecastEnd = new Date(forecastStart);
+    forecastEnd.setDate(forecastEnd.getDate() + 3);
+    forecastEnd.setMinutes(forecastEnd.getMinutes() - 1);
+    const forecastRange = "&date=" + encodeURIComponent(forecastStart.toISOString()) +
+      "&last_date=" + encodeURIComponent(forecastEnd.toISOString());
     const values = await Promise.all([fetchJSON("radar", loc, range, 20),
       fetchJSON("current_weather", loc, "", 30),
       fetchJSON("alerts", loc, "", SETTINGS.alertsMaxAge),
-      fetchJSON("weather", loc, tomorrowRange, SETTINGS.forecastMaxAge)]);
+      fetchJSON("weather", loc, forecastRange, SETTINGS.forecastMaxAge)]);
     const at = Date.now();
     const radar = radarData(values[0], at);
     const weather = weatherData(values[1], at);
     const alerts = alertData(values[2], at);
     const tomorrow = tomorrowData(values[3], at);
     const dayAfter = dayData(values[3], at, 2);
-    const data = model(radar, weather, alerts, at);
+    const today = todayPrecipitationData(values[3], at);
+    const data = model(radar, weather, alerts, today, at);
     widget = buildWidget(loc, weather, tomorrow, dayAfter, radar, data, at);
   } catch (error) { widget = errorWidget(error); }
   Script.setWidget(widget);

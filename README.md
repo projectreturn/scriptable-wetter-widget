@@ -2,7 +2,7 @@
 
 Ein kompaktes, mittleres iOS-Widget für [Scriptable](https://scriptable.app/).
 Es zeigt das aktuelle Wetter, die Aussichten für morgen und übermorgen sowie
-eine klare Regen-, Schnee- oder Glätteinformation für die nächsten 30 Minuten.
+eine klare Regen-, Schnee- oder Glätteinformation bis zum Ende des Tages.
 
 ## Screenshot
 
@@ -18,9 +18,13 @@ Radaransicht nach dem Antippen des Widgets:
 
 - **Links über die gesamte Höhe:** aktueller Ort, Wetterzustand, Temperatur und Windrichtung.
 - **Rechts oben:** Wetter und Tiefst-/Höchsttemperatur für morgen und übermorgen.
-- **Nur rechts darunter:** ein Klartext-Hinweis, ob und in wie vielen Minuten Regen oder
-  Schnee beginnt und bis wann er voraussichtlich anhält. Der Beginn wird im
-  5-Minuten-Raster angegeben.
+- **Nur rechts darunter:** ein Klartext-Hinweis, ob und wann Regen oder Schnee beginnt
+  und bis wann er voraussichtlich anhält. Bis zwei Stunden im Voraus wird das
+  5-Minuten-Radar verwendet, danach die stündliche Tagesprognose. Bleibt der ganze
+  Tag trocken, steht dort ausdrücklich „Heute bleibt es trocken“ und darunter
+  „Kein Regen oder Schnee erwartet“.
+- **Glätte:** amtliche Glättewarnungen werden immer zuerst angezeigt – sofort bei einer
+  aktiven Warnung und mit Startzeit, wenn sie erst später am Tag gilt.
 - **Ganz unten:** Stand der verwendeten Wetterdaten.
 
 ## Installation
@@ -52,3 +56,4 @@ keine Garantie für den Zustand einer bestimmten Straße.
 Bereits die kleinste vom Radar gemeldete Niederschlagsmenge von 0,01 mm je
 5 Minuten wird als leichter Regen erkannt. Eine ausdrückliche aktuelle
 DWD-Stationsmeldung wie „Regen“ hat Vorrang vor einem allgemeinen Wolkensymbol.
+Für den restlichen Tag gilt in der Stundenprognose eine Schwelle von 0,05 mm.
