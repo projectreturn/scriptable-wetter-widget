@@ -591,9 +591,11 @@ function addNotice(parent, notice, compact) {
   box.addSpacer(compact ? 6 : 8);
   const labels = box.addStack();
   labels.layoutVertically();
-  text(labels, notice.title, compact ? 10 : 12, notice.color, true, compact ? 2 : 1);
+  // Im mittleren/großen Widget darf ein längerer Hinweis auf zwei Zeilen
+  // umbrechen, statt am rechten Rand abgeschnitten zu werden.
+  text(labels, notice.title, compact ? 10 : 12, notice.color, true, 2);
   labels.addSpacer(1);
-  text(labels, notice.detail, compact ? 8 : 9, COLORS.muted, false, compact ? 2 : 1);
+  text(labels, notice.detail, compact ? 8 : 9, COLORS.muted, false, 2);
   box.addSpacer();
   return box;
 }
@@ -770,9 +772,11 @@ function buildWidget(loc, w, tomorrow, dayAfter, radar, m, today, now) {
   addNotice(right, m.notice, false);
   body.addSpacer();
 
-  widget.addSpacer(3);
+  // Den verbleibenden Platz auffüllen: Dadurch sitzt die Stand-Angabe
+  // zuverlässig weiter unten am unteren Rand des Widgets.
+  widget.addSpacer();
   const bottom = widget.addStack();
-  bottom.size = new Size(0, 9);
+  bottom.size = new Size(0, 11);
   bottom.centerAlignContent();
   bottom.addSpacer();
   const status = dataStatus(radar, w, tomorrow, dayAfter, today, now);
